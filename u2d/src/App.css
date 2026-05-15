@@ -1,0 +1,129 @@
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+.app {
+  min-height: 100vh;
+  background: linear-gradient(135deg, #000000 0%, #001a00 40%, #004d00 75%, #00b300 100%);
+  display: flex;
+  flex-direction: column;
+  font-family: system-ui, 'Segoe UI', Roboto, sans-serif;
+}
+
+/* Navbar */
+.navbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 40px;
+  height: 64px;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid rgba(0, 200, 0, 0.2);
+}
+
+.nav-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.icon-placeholder {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  border: 2px dashed rgba(0, 200, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 200, 0, 0.05);
+}
+
+.icon-label {
+  font-size: 7px;
+  color: rgba(0, 200, 0, 0.7);
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+
+.site-title {
+  font-size: 22px;
+  font-weight: 700;
+  color: #ffffff;
+  letter-spacing: -0.5px;
+}
+
+.nav-tabs {
+  display: flex;
+  gap: 4px;
+}
+
+.nav-tab {
+  padding: 8px 20px;
+  border-radius: 8px;
+  text-decoration: none;
+  font-size: 15px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.7);
+  transition: all 0.2s ease;
+  border: 1px solid transparent;
+}
+
+.nav-tab:hover,
+.nav-tab.active {
+  color: #ffffff;
+  background: rgba(0, 200, 0, 0.15);
+  border-color: rgba(0, 200, 0, 0.4);
+}
+
+/* Hero */
+.hero-section {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.hero-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 24px;
+  text-align: center;
+}
+
+.hero-icon-placeholder {
+  width: 120px;
+  height: 120px;
+  border-radius: 28px;
+  border: 3px dashed rgba(0, 200, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 200, 0, 0.06);
+  box-shadow: 0 0 40px rgba(0, 200, 0, 0.1);
+}
+
+.hero-icon-label {
+  font-size: 11px;
+  color: rgba(0, 200, 0, 0.6);
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+
+.hero-title {
+  font-size: 72px;
+  font-weight: 800;
+  color: #ffffff;
+  letter-spacing: -2px;
+  text-shadow: 0 0 60px rgba(0, 200, 0, 0.3);
+}
+
+.hero-subtitle {
+  font-size: 20px;
+  color: rgba(255, 255, 255, 0.55);
+  font-weight: 400;
+  letter-spacing: 0.3px;
+}
