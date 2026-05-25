@@ -22,7 +22,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import * as db from './db';
 import { getUserProfile } from './spotify';
-import { startPoller, registerSSEClient } from './poller';
+import { startPoller, registerSSEClient, runPollCycle } from './poller';
 
 // Load .env file into process.env
 // Must happen before any code tries to read process.env.SPOTIFY_*
@@ -141,6 +141,14 @@ app.patch('/api/notifications/:id/read', (req, res) => {
   db.markAsRead(id);
   res.json({ success: true });
 });
+
+// BUTTON !! 
+// POST /api/poll -> trigger an immediate poll cycle
+
+app.post('/api/poll', async (_req, res) => {
+  await runPollCycle()
+  res.json ({success: true})
+})
 
 // POST /api/notifications/mark-all-read → mark everything as read
 app.post('/api/notifications/mark-all-read', (_req, res) => {

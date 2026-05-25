@@ -248,8 +248,24 @@ function useFriends() {
     await fetch(`${API}/api/friends/${id}`, { method: 'DELETE' })
   }
 
+
   return { friends, loading, addError, adding, addFriend, removeFriend }
 }
+// usePollNow - sends a POST to /api/poll and tracks whether it's running
+
+function usePollNow() {
+  //start as false
+  const [polling, setPolling] = useState(false)
+
+  const pollNow = async () => {
+    setPolling(true) //flip the button, shows a spinner
+    await fetch(`${API}/api/poll`, { method: 'POST'}) // remember post doesnt fetch or delete data, just uses it for functions
+    setPolling(false) //flip the button back after clicking
+  }
+
+    return {pollNow, polling}
+  }
+
 
 /**
  * useSSE — connects to the server's SSE stream and fires a callback
@@ -456,6 +472,7 @@ export default function App() {
 
   // Connect to SSE and refresh notifications when the server broadcasts changes
   const { connected } = useSSE(notifs.reload)
+  const { polling, pollNow } = usePollNow()
 
   return (
     <div className="app">
@@ -469,6 +486,13 @@ export default function App() {
 
         <div className="nav-right">
           {/* Live connection status */}
+          <button
+            className="btn btn-ghost"
+            onClick={pollNow}
+            disabled={polling}
+            >
+              {polling ? <><span className="spinner"/> loading... </>: '↻ Refresh?'}
+            </button>
           <span
             className={`status-dot ${connected ? 'connected' : 'disconnected'}`}
             title={connected ? 'Live — connected to server' : 'Disconnected from server'}

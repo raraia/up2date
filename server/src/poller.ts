@@ -74,7 +74,8 @@ function broadcast(event: string, data: object) {
 // POLLING LOGIC
 // =============================================================
 
-async function runPollCycle() {
+export async function runPollCycle() {  // export in front lets us use this elsewhere
+  
   const friends = db.getFriends();
 
   if (friends.length === 0) {
