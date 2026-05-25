@@ -1,0 +1,8 @@
+node_modules/
+dist/
+
+# NEVER commit this file - it contains your secret keys!
+.env
+
+# The SQLite database file (it's local data, not source code)
+*.db
