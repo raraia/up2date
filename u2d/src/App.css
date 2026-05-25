@@ -28,8 +28,8 @@
   align-items: center;
   gap: 10px;
   font-weight: 700;
-  font-size: 16px;
-  color: var(--text);
+  font-size: 19px;
+  color: yellowgreen;
   text-decoration: none;
 }
 
@@ -45,7 +45,7 @@
   display: flex;
   align-items: center;
   gap: 12px;
-}
+}  
 
 /* The little red unread count bubble */
 .badge {
@@ -57,6 +57,25 @@
   border-radius: 99px;
   min-width: 18px;
   text-align: center;
+}
+
+.bell-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+  /* padding gives the badge room to overflow without being clipped */
+  padding: 4px 6px 4px 4px;
+  color: var(--text-muted);
+}
+
+.bell-wrapper .badge {
+  position: absolute;
+  top: 0px;
+  right: 0px;
+  /* smaller than the default badge — it's decorative, not the main count */
+  font-size: 10px;
+  padding: 1px 5px;
+  min-width: 16px;
 }
 
 /* Live connection status indicator */

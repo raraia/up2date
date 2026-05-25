@@ -14,6 +14,9 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react'
 import './App.css'
+import { Bell } from 'lucide-react'
+
+
 
 // The URL of our backend server
 const API = 'http://localhost:3001'
@@ -258,9 +261,18 @@ function usePollNow() {
   const [polling, setPolling] = useState(false)
 
   const pollNow = async () => {
-    setPolling(true) //flip the button, shows a spinner
-    await fetch(`${API}/api/poll`, { method: 'POST'}) // remember post doesnt fetch or delete data, just uses it for functions
-    setPolling(false) //flip the button back after clicking
+    setPolling(true)
+
+    // Promise.all runs both at the same time and waits for BOTH to finish.
+    // The fetch hits Spotify (fast if rate-limited, slow if actually checking).
+    // The timeout guarantees the spinner shows for at least 1.5s so it
+    // doesn't flash and disappear before you even notice it.
+    await Promise.all([
+      fetch(`${API}/api/poll`, { method: 'POST' }),
+      new Promise(resolve => setTimeout(resolve, 1500))
+    ])
+
+    setPolling(false)
   }
 
     return {pollNow, polling}
@@ -485,23 +497,24 @@ export default function App() {
         </div>
 
         <div className="nav-right">
-          {/* Live connection status */}
+          {/* Poll button — the status dot lives inside it so it's not floating alone */}
           <button
             className="btn btn-ghost"
             onClick={pollNow}
             disabled={polling}
-            >
-              {polling ? <><span className="spinner"/> loading... </>: '↻ Refresh?'}
-            </button>
-          <span
-            className={`status-dot ${connected ? 'connected' : 'disconnected'}`}
-            title={connected ? 'Live — connected to server' : 'Disconnected from server'}
-          />
+            title={connected ? 'Live' : 'Disconnected'}
+          >
+            <span className={`status-dot ${connected ? 'connected' : 'disconnected'}`} />
+            {polling ? <><span className="spinner" /> loading...</> : '↻ Refresh?'}
+          </button>
 
-          {/* Unread badge — only show when there are unread notifications */}
-          {notifs.unreadCount > 0 && (
-            <span className="badge">{notifs.unreadCount}</span>
-          )}
+          {/* Bell with overlapping unread count badge */}
+          <div className="bell-wrapper">
+            <Bell size={18} />
+            {notifs.unreadCount > 0 && (
+              <span className="badge">{notifs.unreadCount}</span>
+            )}
+          </div>
         </div>
       </nav>
 
