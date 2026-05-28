@@ -75,7 +75,16 @@ function broadcast(event: string, data: object) {
 // =============================================================
 
 export async function runPollCycle() {  // export in front lets us use this elsewhere
-  
+
+  // Read the rate limit timestamp from the database (persists across restarts).
+  // If we're still in the cooldown window, skip this cycle entirely.
+  const rateLimitedUntil = db.getRateLimitedUntil();
+  if (Date.now() < rateLimitedUntil) {
+    const minsLeft = Math.ceil((rateLimitedUntil - Date.now()) / 1000 / 60);
+    console.log(`⏳ Still rate limited by Spotify — ${minsLeft} min(s) remaining, skipping`);
+    return;
+  }
+
   const friends = db.getFriends();
 
   if (friends.length === 0) {
@@ -87,8 +96,20 @@ export async function runPollCycle() {  // export in front lets us use this else
   let totalNew = 0;
 
   for (const friend of friends) {
-    const count = await checkFriendForChanges(friend);
-    totalNew += count;
+    try {
+      const count = await checkFriendForChanges(friend);
+      totalNew += count;
+    } catch (err: unknown) {
+      // Spotify told us exactly how long to wait — store that as a future timestamp
+      if (err instanceof Error && 'retryAfter' in err) {
+        const wait = (err as Error & { retryAfter: number }).retryAfter;
+        // Save to the database so this survives server restarts
+        db.setRateLimitedUntil(Date.now() + wait * 1000);
+        const hours = (wait / 3600).toFixed(1);
+        console.log(`🚫 Rate limited by Spotify — polling paused for ${hours} hours`);
+        return;
+      }
+    }
   }
 
   console.log(`✅ Poll done — ${totalNew} new notification(s)\n`);

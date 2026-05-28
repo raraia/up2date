@@ -32,7 +32,9 @@ export async function checkFriendForChanges(friend: {
   try {
     spotifyPlaylists = await getUserPlaylists(friend.spotify_username);
   } catch (err) {
-    // Don't crash the whole poll cycle if one friend fails
+    // If Spotify rate-limited us, re-throw so the poller can handle the backoff.
+    // For any other error, just log and skip this friend quietly.
+    if (err instanceof Error && 'retryAfter' in err) throw err;
     console.error(`  ⚠️  Could not fetch playlists for ${label}:`, err);
     return 0;
   }
@@ -137,6 +139,10 @@ export async function checkFriendForChanges(friend: {
         const track = currentTrackMap.get(id)!;
         console.log(`    ➕ Added to "${spotifyPlaylist.name}": ${track.name}`);
 
+        // Pick the medium-size album image (index 1 = ~300px).
+        // Falls back to the first available image, or undefined if none.
+        const albumArt = (track.album?.images[1] ?? track.album?.images[0])?.url;
+
         db.addNotification({
           friendId:          friend.id,
           playlistSpotifyId: spotifyPlaylist.id,
@@ -144,6 +150,9 @@ export async function checkFriendForChanges(friend: {
           type:              'track_added',
           trackName:         track.name,
           artistName:        track.artists[0]?.name ?? 'Unknown Artist',
+          // Store album art URL + track ID so the frontend can show art
+          // and link directly to the song on Spotify
+          extraData:         { trackId: track.id, albumId: track.album?.id, ...(albumArt ? { albumArt } : {}) },
         });
 
         newNotifications++;

@@ -89,6 +89,12 @@ export interface SpotifyTrack {
   id: string;
   name: string;
   artists: { name: string }[];
+  // Album art comes as an array of images at different sizes.
+  // Spotify typically gives: 640px, 300px, 64px — we'll grab the 300px one.
+  album: {
+    id: string;
+    images: { url: string; width: number; height: number }[];
+  };
 }
 
 // =============================================================
@@ -113,6 +119,16 @@ export async function getUserPlaylists(userId: string): Promise<SpotifyPlaylist[
     const response = await fetch(url, {
       headers: { Authorization: `Bearer ${token}` },
     });
+
+    if (response.status === 429) {
+      // Spotify rate limit hit. The Retry-After header tells us exactly how many
+      // seconds to wait before trying again. We throw a special error so the
+      // poller can read the wait time and pause itself accordingly.
+      const retryAfter = parseInt(response.headers.get('Retry-After') ?? '60', 10);
+      const err = new Error(`Rate limited`) as Error & { retryAfter: number };
+      err.retryAfter = retryAfter;
+      throw err;
+    }
 
     if (!response.ok) {
       throw new Error(`Spotify API error ${response.status}: ${response.statusText}`);
@@ -150,7 +166,7 @@ export async function getPlaylistTracks(playlistId: string): Promise<SpotifyTrac
 
   let url: string | null =
     `https://api.spotify.com/v1/playlists/${playlistId}/tracks` +
-    `?limit=100&fields=next,items(track(id,name,artists(name)))`;
+    `?limit=100&fields=next,items(track(id,name,artists(name),album(id,images)))`;
 
   while (url) {
     const response = await fetch(url, {

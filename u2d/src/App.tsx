@@ -27,6 +27,7 @@ const API = 'http://localhost:3001'
 // TypeScript uses them to catch bugs at compile time.
 // =============================================================
 
+
 interface Notification {
   id: number
   type: 'track_added' | 'track_removed' | 'playlist_created' | 'playlist_deleted' | 'playlist_renamed'
@@ -108,22 +109,24 @@ function describeNotification(n: Notification): {
 }
 
 /**
- * Format a timestamp into a relative string like "2 hours ago".
- * Uses Intl.RelativeTimeFormat — built into modern browsers, no library needed!
+ * Format a timestamp into a readable date + time string.
+ * Uses Intl.DateTimeFormat — built into modern browsers, no library needed!
+ * Example output: "May 27, 3:45 PM"  (current year omitted to save space)
+ *                 "Jan 3 2025, 9:12 AM"  (past year shown)
  */
-function timeAgo(isoString: string): string {
-  const diff = Date.now() - new Date(isoString).getTime() // milliseconds ago
-  const seconds = Math.floor(diff / 1000)
-  const minutes = Math.floor(seconds / 60)
-  const hours   = Math.floor(minutes / 60)
-  const days    = Math.floor(hours / 24)
+function formatTime(isoString: string): string {
+  const date = new Date(isoString)
+  const now  = new Date()
+  const sameYear = date.getFullYear() === now.getFullYear()
 
-  const rtf = new Intl.RelativeTimeFormat('en', { numeric: 'auto' })
-
-  if (days > 0)    return rtf.format(-days, 'day')
-  if (hours > 0)   return rtf.format(-hours, 'hour')
-  if (minutes > 0) return rtf.format(-minutes, 'minute')
-  return 'just now'
+  return new Intl.DateTimeFormat('en-US', {
+    month:  'short',
+    day:    'numeric',
+    year:   sameYear ? undefined : 'numeric', // only show year if it's not this year
+    hour:   'numeric',
+    minute: '2-digit',
+    hour12: true,
+  }).format(date)
 }
 
 // =============================================================
@@ -174,8 +177,24 @@ function useNotifications() {
     return () => { cancelled = true }
   }, [tick]) // re-run whenever tick changes
 
-  // Calling reload() bumps tick → triggers the effect above → fresh fetch
+  // reload() bumps tick → triggers the effect above → fresh fetch
+  // Used by the SSE hook to refresh when the server pushes a change.
   const reload = useCallback(() => setTick(t => t + 1), [])
+
+  // fetchNow() does the same thing but actually returns a Promise that resolves
+  // when the fetch completes — so callers can await it and know when data is fresh.
+  // reload() can't do this because it just bumps a counter; the fetch happens
+  // asynchronously inside a useEffect, invisible to the caller.
+  const fetchNow = useCallback(async () => {
+    try {
+      const res  = await fetch(`${API}/api/notifications`)
+      const data = await res.json() as Notification[]
+      setNotifications(data)
+      setError(null)
+    } catch {
+      setError('Could not reach the server. Is it running?')
+    }
+  }, [])
 
   const markRead = async (id: number) => {
     // Optimistic update — change the UI immediately, then confirm with server.
@@ -193,7 +212,7 @@ function useNotifications() {
 
   const unreadCount = notifications.filter(n => n.is_read === 0).length
 
-  return { notifications, loading, error, unreadCount, markRead, markAllRead, reload }
+  return { notifications, loading, error, unreadCount, markRead, markAllRead, reload, fetchNow }
 }
 
 /**
@@ -254,29 +273,37 @@ function useFriends() {
 
   return { friends, loading, addError, adding, addFriend, removeFriend }
 }
-// usePollNow - sends a POST to /api/poll and tracks whether it's running
+// usePollNow - sends a POST to /api/poll, then refreshes notifications,
+// then stops the spinner. The spinner runs for the full real duration —
+// no fake timeout, it stops exactly when the data is fresh.
 
-function usePollNow() {
-  //start as false
+function usePollNow(afterPoll: () => Promise<void>) {
   const [polling, setPolling] = useState(false)
+
+  // Store the callback in a ref so it's never a dependency of pollNow.
+  // Same pattern as useSSE — keeps the function stable.
+  const afterPollRef = useRef(afterPoll)
+  useEffect(() => { afterPollRef.current = afterPoll }, [afterPoll])
 
   const pollNow = async () => {
     setPolling(true)
-
-    // Promise.all runs both at the same time and waits for BOTH to finish.
-    // The fetch hits Spotify (fast if rate-limited, slow if actually checking).
-    // The timeout guarantees the spinner shows for at least 1.5s so it
-    // doesn't flash and disappear before you even notice it.
-    await Promise.all([
-      fetch(`${API}/api/poll`, { method: 'POST' }),
-      new Promise(resolve => setTimeout(resolve, 1500))
-    ])
-
-    setPolling(false)
+    try {
+      // Run the poll + notification reload + a minimum delay all at the same time.
+      // Promise.all waits for ALL of them to finish before continuing.
+      // The minimum delay means the spinner always shows for at least 1s,
+      // even when Spotify is rate-limited and everything completes instantly.
+      // Without it, setPolling flips true→false faster than React can repaint.
+      await Promise.all([
+        fetch(`${API}/api/poll`, { method: 'POST' }).then(() => afterPollRef.current()),
+        new Promise(resolve => setTimeout(resolve, 1000)) // minimum 1s spinner
+      ])
+    } finally {
+      setPolling(false)
+    }
   }
 
-    return {pollNow, polling}
-  }
+  return { pollNow, polling }
+}
 
 
 /**
@@ -372,7 +399,7 @@ function NotificationCard({
       </div>
 
       {/* Timestamp */}
-      <div className="notif-time">{timeAgo(notification.created_at)}</div>
+      <div className="notif-time">{formatTime(notification.created_at)}</div>
     </div>
   )
 }
@@ -471,20 +498,74 @@ function AddFriendForm({
 }
 
 // =============================================================
+// FEED CARD — Instagram-style card for track additions
+// Only used on the Home tab. Shows album art + track info.
+// =============================================================
+
+function FeedCard({ n }: { n: Notification }) {
+  // Parse extra_data JSON to get the album art URL + track ID we stored in differ.ts
+  const extra      = n.extra_data ? JSON.parse(n.extra_data) as { albumArt?: string; trackId?: string; albumId?: string } : {}
+  const art        = extra.albumArt
+  // Link to the album/EP page so you can see the full release context.
+  // Falls back to the track page if somehow albumId wasn't stored.
+  const spotifyUrl = extra.albumId
+    ? `https://open.spotify.com/album/${extra.albumId}`
+    : extra.trackId
+      ? `https://open.spotify.com/track/${extra.trackId}`
+      : null
+
+  const handleClick = () => {
+    if (spotifyUrl) window.open(spotifyUrl, '_blank', 'noopener,noreferrer')
+  }
+
+  return (
+    <div
+      className="feed-card"
+      onClick={handleClick}
+      style={spotifyUrl ? { cursor: 'pointer' } : undefined}
+      title={spotifyUrl ? `Open "${n.track_name}" in Spotify` : undefined}
+    >
+      {/* ── Album art ── */}
+      <div className="feed-card-art">
+        {art
+          ? <img src={art} alt={n.track_name ?? 'album art'} />
+          : <div className="feed-card-placeholder">🎵</div>
+        }
+      </div>
+
+      {/* ── Track info below the image ── */}
+      <div className="feed-card-info">
+        <div className="feed-card-track">{n.track_name}</div>
+        <div className="feed-card-artist">{n.artist_name}</div>
+        <div className="feed-card-meta">
+          {/* Template literals (``) let you embed variables inside strings with ${} */}
+          Added to <strong>{n.playlist_name}</strong>
+        </div>
+        <div className="feed-card-footer">
+          <span className="feed-card-friend">{n.friend_display_name}</span>
+          <span className="feed-card-time">{formatTime(n.created_at)}</span>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// =============================================================
 // MAIN APP COMPONENT
 // =============================================================
 
 export default function App() {
-  // Which tab is active: 'notifications' or 'friends'
-  const [activeTab, setActiveTab] = useState<'notifications' | 'friends'>('notifications')
+  // Two tabs for the left column: Home feed or Friends management
+  const [activeTab, setActiveTab] = useState<'home' | 'friends'>('home')
 
-  // Pull in data and actions from our hooks
   const notifs  = useNotifications()
   const friends = useFriends()
-
-  // Connect to SSE and refresh notifications when the server broadcasts changes
   const { connected } = useSSE(notifs.reload)
-  const { polling, pollNow } = usePollNow()
+  const { polling, pollNow } = usePollNow(notifs.fetchNow)
+
+  // The home feed only shows track additions — those are the ones with album art.
+  // .filter() returns a new array containing only items where the condition is true.
+  const feedItems = notifs.notifications.filter(n => n.type === 'track_added')
 
   return (
     <div className="app">
@@ -497,7 +578,6 @@ export default function App() {
         </div>
 
         <div className="nav-right">
-          {/* Poll button — the status dot lives inside it so it's not floating alone */}
           <button
             className="btn btn-ghost"
             onClick={pollNow}
@@ -508,7 +588,6 @@ export default function App() {
             {polling ? <><span className="spinner" /> loading...</> : '↻ Refresh?'}
           </button>
 
-          {/* Bell with overlapping unread count badge */}
           <div className="bell-wrapper">
             <Bell size={18} />
             {notifs.unreadCount > 0 && (
@@ -518,139 +597,118 @@ export default function App() {
         </div>
       </nav>
 
-      {/* ── Main content ────────────────────────────── */}
-      <main className="main">
+      {/* ── Two-column layout ───────────────────────── */}
+      {/* CSS grid splits the page: main content left, notification sidebar right */}
+      <div className="layout">
 
-        {/* ── Tabs ──────────────────────────────────── */}
-        <div className="tabs">
-          <button
-            className={`tab ${activeTab === 'notifications' ? 'active' : ''}`}
-            onClick={() => setActiveTab('notifications')}
-          >
-            Notifications
-            {notifs.unreadCount > 0 && ` (${notifs.unreadCount})`}
-          </button>
-          <button
-            className={`tab ${activeTab === 'friends' ? 'active' : ''}`}
-            onClick={() => setActiveTab('friends')}
-          >
-            Friends ({friends.friends.length})
-          </button>
+        {/* ── LEFT COLUMN ─────────────────────────── */}
+        <div className="feed-column">
+
+          {/* Tabs just for the left column */}
+          <div className="tabs">
+            <button
+              className={`tab ${activeTab === 'home' ? 'active' : ''}`}
+              onClick={() => setActiveTab('home')}
+            >
+              Home
+            </button>
+            <button
+              className={`tab ${activeTab === 'friends' ? 'active' : ''}`}
+              onClick={() => setActiveTab('friends')}
+            >
+              Friends ({friends.friends.length})
+            </button>
+          </div>
+
+          {/* ── HOME FEED ─────────────────────────── */}
+          {activeTab === 'home' && (
+            <>
+              {notifs.loading && (
+                <div className="empty-state">
+                  <div className="spinner" style={{ margin: '0 auto' }} />
+                </div>
+              )}
+
+              {notifs.error && (
+                <div className="error-banner">⚠️ {notifs.error}</div>
+              )}
+
+              {!notifs.loading && feedItems.length === 0 && (
+                <div className="empty-state">
+                  <div className="empty-icon">🎧</div>
+                  <div className="empty-title">Nothing here yet</div>
+                  <div className="empty-body">
+                    When your friends add songs to their playlists, they'll show up here
+                    with the album art. Check back soon!
+                  </div>
+                </div>
+              )}
+
+              {/* Instagram-style grid of feed cards */}
+              {feedItems.length > 0 && (
+                <div className="feed-grid">
+                  {feedItems.map(n => (
+                    <FeedCard key={n.id} n={n} />
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+
+          {/* ── FRIENDS TAB ───────────────────────── */}
+          {activeTab === 'friends' && (
+            <>
+              <AddFriendForm
+                onAdd={friends.addFriend}
+                adding={friends.adding}
+                error={friends.addError}
+              />
+
+              {friends.friends.length === 0 ? (
+                <div className="empty-state">
+                  <div className="empty-icon">👥</div>
+                  <div className="empty-title">No friends tracked yet</div>
+                  <div className="empty-body">
+                    Add a Spotify username above to start tracking their playlists.
+                  </div>
+                </div>
+              ) : (
+                <div className="friends-list">
+                  {friends.friends.map(f => (
+                    <FriendPill key={f.id} friend={f} onRemove={friends.removeFriend} />
+                  ))}
+                </div>
+              )}
+            </>
+          )}
         </div>
 
-        {/* ── Notifications tab ─────────────────────── */}
-        {activeTab === 'notifications' && (
-          <>
-            <div className="section-header">
-              <div>
-                <div className="section-title">Activity Feed</div>
-                <div className="section-subtitle">
-                  Updates from {friends.friends.length} tracked friend(s)
-                </div>
-              </div>
+        {/* ── RIGHT SIDEBAR — always visible ──────── */}
+        {/* Shows ALL notification types (adds, removes, renames, etc.) */}
+        <aside className="sidebar">
+          <div className="sidebar-header">
+            <span className="sidebar-title">Activity</span>
+            {notifs.unreadCount > 0 && (
+              <button className="btn btn-ghost" style={{ fontSize: '11px', padding: '4px 8px' }} onClick={notifs.markAllRead}>
+                Mark all read
+              </button>
+            )}
+          </div>
 
-              {notifs.unreadCount > 0 && (
-                <button className="btn btn-ghost" onClick={notifs.markAllRead}>
-                  Mark all read
-                </button>
-              )}
+          {notifs.notifications.length === 0 ? (
+            <div style={{ color: 'var(--text-muted)', fontSize: '13px', marginTop: '16px' }}>
+              No activity yet
             </div>
-
-            {/* Loading state */}
-            {notifs.loading && (
-              <div className="empty-state">
-                <div className="spinner" style={{ margin: '0 auto' }} />
-              </div>
-            )}
-
-            {/* Error state */}
-            {notifs.error && (
-              <div className="error-banner">⚠️ {notifs.error}</div>
-            )}
-
-            {/* Empty state — no notifications yet */}
-            {!notifs.loading && !notifs.error && notifs.notifications.length === 0 && (
-              <div className="empty-state">
-                <div className="empty-icon">🎧</div>
-                <div className="empty-title">All caught up</div>
-                <div className="empty-body">
-                  No activity yet. Once your friends update their playlists,
-                  you'll see it here. The server checks every 5 minutes.
-                </div>
-              </div>
-            )}
-
-            {/* The actual notification list */}
-            {!notifs.loading && notifs.notifications.length > 0 && (
-              <div className="notification-list">
-                {notifs.notifications.map(n => (
-                  <NotificationCard
-                    key={n.id}
-                    notification={n}
-                    onRead={notifs.markRead}
-                  />
-                ))}
-              </div>
-            )}
-          </>
-        )}
-
-        {/* ── Friends tab ───────────────────────────── */}
-        {activeTab === 'friends' && (
-          <>
-            <div className="section-header">
-              <div>
-                <div className="section-title">Tracked Friends</div>
-                <div className="section-subtitle">
-                  Add a friend's Spotify username to start watching their playlists
-                </div>
-              </div>
+          ) : (
+            <div className="notification-list">
+              {notifs.notifications.map(n => (
+                <NotificationCard key={n.id} notification={n} onRead={notifs.markRead} />
+              ))}
             </div>
+          )}
+        </aside>
 
-            {/*
-              ── YOUR TURN ──────────────────────────────────────
-              The AddFriendForm calls friends.addFriend() when submitted.
-              That function hits POST /api/friends on the backend.
-              The backend verifies the Spotify user exists, saves them,
-              and the poller will pick them up on the next cycle.
-
-              Try tracing the data flow:
-                1. User types username → form's `value` state updates
-                2. User clicks "Track" → handleSubmit fires
-                3. handleSubmit calls onAdd(value) → this is friends.addFriend
-                4. addFriend POSTs to /api/friends
-                5. Server validates with Spotify, saves to DB
-                6. load() is called → friends list refreshes
-            */}
-            <AddFriendForm
-              onAdd={friends.addFriend}
-              adding={friends.adding}
-              error={friends.addError}
-            />
-
-            {friends.friends.length === 0 ? (
-              <div className="empty-state">
-                <div className="empty-icon">👥</div>
-                <div className="empty-title">No friends tracked yet</div>
-                <div className="empty-body">
-                  Add a friend's Spotify username above to start getting playlist updates.
-                </div>
-              </div>
-            ) : (
-              <div className="friends-list">
-                {friends.friends.map(f => (
-                  <FriendPill
-                    key={f.id}
-                    friend={f}
-                    onRemove={friends.removeFriend}
-                  />
-                ))}
-              </div>
-            )}
-          </>
-        )}
-
-      </main>
+      </div>
     </div>
   )
 }

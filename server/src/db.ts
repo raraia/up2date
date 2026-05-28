@@ -69,6 +69,10 @@ interface DbSchema {
     playlists:     number;
     notifications: number;
   };
+  // Persists Spotify rate limit across server restarts.
+  // Stores a Unix timestamp (ms) — if Date.now() is less than this, we're still banned.
+  // Without this, every restart would forget the ban and immediately re-trigger it.
+  _rateLimitedUntil: number;
 }
 
 // =============================================================
@@ -81,11 +85,12 @@ const DB_PATH = path.join(process.cwd(), 'up2date-data.json');
 function loadData(): DbSchema {
   if (!fs.existsSync(DB_PATH)) {
     return {
-      friends:         [],
-      playlists:       [],
-      playlist_tracks: [],
-      notifications:   [],
-      _counters:       { friends: 0, playlists: 0, notifications: 0 },
+      friends:            [],
+      playlists:          [],
+      playlist_tracks:    [],
+      notifications:      [],
+      _counters:          { friends: 0, playlists: 0, notifications: 0 },
+      _rateLimitedUntil:  0, // 0 means "not rate limited"
     };
   }
   const raw = fs.readFileSync(DB_PATH, 'utf-8');
@@ -306,5 +311,21 @@ export function markAsRead(notificationId: number): void {
 
 export function markAllAsRead(): void {
   data.notifications.forEach(n => { n.is_read = 1; });
+  saveData(data);
+}
+
+// =============================================================
+// RATE LIMIT PERSISTENCE
+// Storing this in the JSON file means server restarts won't
+// forget that Spotify banned us and immediately re-trigger the ban.
+// =============================================================
+
+export function getRateLimitedUntil(): number {
+  // If the existing data file predates this field, default to 0 (not limited)
+  return data._rateLimitedUntil ?? 0;
+}
+
+export function setRateLimitedUntil(timestamp: number): void {
+  data._rateLimitedUntil = timestamp;
   saveData(data);
 }
