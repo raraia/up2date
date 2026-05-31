@@ -41,13 +41,6 @@ interface Notification {
   friend_username: string
 }
 
-interface Friend {
-  id: number
-  spotify_username: string
-  display_name: string
-  added_at: string
-}
-
 // =============================================================
 // UTILITY FUNCTIONS
 // =============================================================
@@ -215,47 +208,51 @@ function useNotifications() {
   return { notifications, loading, error, unreadCount, markRead, markAllRead, reload, fetchNow }
 }
 
+interface TrackedPlaylist {
+  spotify_playlist_id: string
+  name:                string
+  owner_name:          string
+  last_polled_at:      string
+}
+
 /**
- * useFriends — fetches friends list and exposes add/remove functions.
- * Same tick pattern as useNotifications for the same reasons.
+ * usePlaylists — fetches tracked playlists and exposes add/remove functions.
+ * Playlists are added by Spotify URL or ID now (no more username lookup).
  */
-function useFriends() {
-  const [friends, setFriends]   = useState<Friend[]>([])
-  const [loading, setLoading]   = useState(true)
-  const [addError, setAddError] = useState<string | null>(null)
-  const [adding, setAdding]     = useState(false)
-  const [tick, setTick]         = useState(0)
+function usePlaylists() {
+  const [playlists, setPlaylists] = useState<TrackedPlaylist[]>([])
+  const [addError, setAddError]   = useState<string | null>(null)
+  const [adding, setAdding]       = useState(false)
+  const [tick, setTick]           = useState(0)
 
   useEffect(() => {
     let cancelled = false
     async function load() {
-      const res  = await fetch(`${API}/api/friends`)
-      const data = await res.json() as Friend[]
-      if (!cancelled) { setFriends(data); setLoading(false) }
+      const res  = await fetch(`${API}/api/playlists`)
+      const data = await res.json() as TrackedPlaylist[]
+      if (!cancelled) setPlaylists(data)
     }
     load()
     return () => { cancelled = true }
   }, [tick])
 
-  // Bumping tick causes the useEffect above to re-run and re-fetch friends
-  const reloadFriends = useCallback(() => setTick(t => t + 1), [])
+  const reload = useCallback(() => setTick(t => t + 1), [])
 
-  const addFriend = async (spotifyUsername: string) => {
+  const addPlaylist = async (input: string) => {
     setAdding(true)
     setAddError(null)
     try {
-      const res = await fetch(`${API}/api/friends`, {
+      const res  = await fetch(`${API}/api/playlists`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        // JSON.stringify converts a JS object to a JSON string
-        body:    JSON.stringify({ spotifyUsername }),
+        body:    JSON.stringify({ input }),
       })
       const data = await res.json()
       if (!res.ok) {
-        setAddError(data.error ?? 'Failed to add friend')
+        setAddError(data.error ?? 'Failed to add playlist')
         return false
       }
-      reloadFriends() // bump tick → useEffect re-runs → fresh list
+      reload()
       return true
     } catch {
       setAddError('Could not reach the server')
@@ -265,13 +262,12 @@ function useFriends() {
     }
   }
 
-  const removeFriend = async (id: number) => {
-    setFriends(prev => prev.filter(f => f.id !== id)) // optimistic remove
-    await fetch(`${API}/api/friends/${id}`, { method: 'DELETE' })
+  const removePlaylist = async (spotifyId: string) => {
+    setPlaylists(prev => prev.filter(p => p.spotify_playlist_id !== spotifyId))
+    await fetch(`${API}/api/playlists/${spotifyId}`, { method: 'DELETE' })
   }
 
-
-  return { friends, loading, addError, adding, addFriend, removeFriend }
+  return { playlists, addError, adding, addPlaylist, removePlaylist }
 }
 // usePollNow - sends a POST to /api/poll, then refreshes notifications,
 // then stops the spinner. The spinner runs for the full real duration —
@@ -288,15 +284,16 @@ function usePollNow(afterPoll: () => Promise<void>) {
   const pollNow = async () => {
     setPolling(true)
     try {
-      // Run the poll + notification reload + a minimum delay all at the same time.
-      // Promise.all waits for ALL of them to finish before continuing.
-      // The minimum delay means the spinner always shows for at least 1s,
-      // even when Spotify is rate-limited and everything completes instantly.
-      // Without it, setPolling flips true→false faster than React can repaint.
+      // Run the poll + notification reload + minimum delay simultaneously.
+      // Promise.all waits for ALL of them before continuing.
       await Promise.all([
         fetch(`${API}/api/poll`, { method: 'POST' }).then(() => afterPollRef.current()),
-        new Promise(resolve => setTimeout(resolve, 1000)) // minimum 1s spinner
+        new Promise(resolve => setTimeout(resolve, 1500)) // 1.5s minimum so it feels real
       ])
+      // Wait for React to finish painting any new cards onto the screen.
+      // Without this, the spinner can stop a frame before new content appears.
+      // requestAnimationFrame fires right before the next browser paint.
+      await new Promise(resolve => requestAnimationFrame(resolve))
     } finally {
       setPolling(false)
     }
@@ -404,25 +401,27 @@ function NotificationCard({
   )
 }
 
-/** A pill showing a tracked friend's name with a remove button */
-function FriendPill({
-  friend,
+/** A pill showing a tracked playlist with a remove button */
+function PlaylistPill({
+  playlist,
   onRemove,
 }: {
-  friend: Friend
-  onRemove: (id: number) => void
+  playlist: TrackedPlaylist
+  onRemove: (spotifyId: string) => void
 }) {
-  const initials = (friend.display_name || friend.spotify_username)
-    .slice(0, 2)
-    .toUpperCase()
-
+  const initials = playlist.name.slice(0, 2).toUpperCase()
   return (
     <div className="friend-pill">
       <div className="friend-avatar">{initials}</div>
-      <span>{friend.display_name || friend.spotify_username}</span>
+      <span>
+        <strong>{playlist.name}</strong>
+        <span style={{ color: 'var(--text-muted)', marginLeft: 6 }}>
+          by {playlist.owner_name}
+        </span>
+      </span>
       <button
         className="friend-remove"
-        onClick={() => onRemove(friend.id)}
+        onClick={() => onRemove(playlist.spotify_playlist_id)}
         title="Stop tracking"
       >
         ×
@@ -431,54 +430,44 @@ function FriendPill({
   )
 }
 
-/** The "Add a friend" form */
-function AddFriendForm({
+/** The "Add a playlist" form — accepts a Spotify playlist URL or bare ID */
+function AddPlaylistForm({
   onAdd,
   adding,
   error,
 }: {
-  onAdd: (username: string) => Promise<boolean>
+  onAdd: (input: string) => Promise<boolean>
   adding: boolean
   error: string | null
 }) {
-  // useState for the text input — React controls the input value
   const [value, setValue] = useState('')
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault() // prevent browser from refreshing the page
+    e.preventDefault()
     if (!value.trim()) return
     const success = await onAdd(value.trim())
-    if (success) setValue('') // clear input on success
+    if (success) setValue('')
   }
 
   return (
     <div className="add-friend-form">
       {error && <div className="error-banner">⚠️ {error}</div>}
-
       <form onSubmit={handleSubmit}>
         <div className="form-row">
           <div className="form-group">
-            {/*
-              ── YOUR TURN ──────────────────────────────────────
-              This is the input that takes a Spotify username.
-              The label, placeholder, and hint text are all here.
-              You can customize the wording however you like!
-            */}
-            <label className="form-label" htmlFor="spotify-username">
-              Friend's Spotify Username
+            <label className="form-label" htmlFor="playlist-input">
+              Spotify Playlist URL or ID
             </label>
             <input
-              id="spotify-username"
+              id="playlist-input"
               className="form-input"
               type="text"
-              placeholder="e.g. philik3"
+              placeholder="https://open.spotify.com/playlist/..."
               value={value}
-              // onChange fires on every keystroke — we update `value` so React stays in sync
               onChange={e => setValue(e.target.value)}
               disabled={adding}
             />
           </div>
-
           <button
             type="submit"
             className="btn btn-accent"
@@ -487,10 +476,8 @@ function AddFriendForm({
             {adding ? <span className="spinner" /> : 'Track'}
           </button>
         </div>
-
         <p className="form-hint">
-          💡 Find a username by opening their Spotify profile → ⋯ → Share → Copy link.
-          The ID is at the end of the URL.
+          💡 In Spotify: right-click any playlist → Share → Copy link to playlist
         </p>
       </form>
     </div>
@@ -558,13 +545,11 @@ export default function App() {
   // Two tabs for the left column: Home feed or Friends management
   const [activeTab, setActiveTab] = useState<'home' | 'friends'>('home')
 
-  const notifs  = useNotifications()
-  const friends = useFriends()
+  const notifs    = useNotifications()
+  const playlists = usePlaylists()
   const { connected } = useSSE(notifs.reload)
   const { polling, pollNow } = usePollNow(notifs.fetchNow)
 
-  // The home feed only shows track additions — those are the ones with album art.
-  // .filter() returns a new array containing only items where the condition is true.
   const feedItems = notifs.notifications.filter(n => n.type === 'track_added')
 
   return (
@@ -616,7 +601,7 @@ export default function App() {
               className={`tab ${activeTab === 'friends' ? 'active' : ''}`}
               onClick={() => setActiveTab('friends')}
             >
-              Friends ({friends.friends.length})
+              Playlists ({playlists.playlists.length})
             </button>
           </div>
 
@@ -638,13 +623,12 @@ export default function App() {
                   <div className="empty-icon">🎧</div>
                   <div className="empty-title">Nothing here yet</div>
                   <div className="empty-body">
-                    When your friends add songs to their playlists, they'll show up here
+                    When songs get added to tracked playlists, they'll show up here
                     with the album art. Check back soon!
                   </div>
                 </div>
               )}
 
-              {/* Instagram-style grid of feed cards */}
               {feedItems.length > 0 && (
                 <div className="feed-grid">
                   {feedItems.map(n => (
@@ -655,27 +639,27 @@ export default function App() {
             </>
           )}
 
-          {/* ── FRIENDS TAB ───────────────────────── */}
+          {/* ── PLAYLISTS TAB ─────────────────────── */}
           {activeTab === 'friends' && (
             <>
-              <AddFriendForm
-                onAdd={friends.addFriend}
-                adding={friends.adding}
-                error={friends.addError}
+              <AddPlaylistForm
+                onAdd={playlists.addPlaylist}
+                adding={playlists.adding}
+                error={playlists.addError}
               />
 
-              {friends.friends.length === 0 ? (
+              {playlists.playlists.length === 0 ? (
                 <div className="empty-state">
-                  <div className="empty-icon">👥</div>
-                  <div className="empty-title">No friends tracked yet</div>
+                  <div className="empty-icon">🎵</div>
+                  <div className="empty-title">No playlists tracked yet</div>
                   <div className="empty-body">
-                    Add a Spotify username above to start tracking their playlists.
+                    Paste a Spotify playlist link above to start tracking it.
                   </div>
                 </div>
               ) : (
                 <div className="friends-list">
-                  {friends.friends.map(f => (
-                    <FriendPill key={f.id} friend={f} onRemove={friends.removeFriend} />
+                  {playlists.playlists.map(p => (
+                    <PlaylistPill key={p.spotify_playlist_id} playlist={p} onRemove={playlists.removePlaylist} />
                   ))}
                 </div>
               )}

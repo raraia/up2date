@@ -173,6 +173,15 @@ export async function getPlaylistTracks(playlistId: string): Promise<SpotifyTrac
       headers: { Authorization: `Bearer ${token}` },
     });
 
+    if (response.status === 429) {
+      // Same rate limit handling as getUserPlaylists — throw a special error
+      // so the poller can store the cooldown and skip future polls.
+      const retryAfter = parseInt(response.headers.get('Retry-After') ?? '60', 10);
+      const err = new Error('Rate limited') as Error & { retryAfter: number };
+      err.retryAfter = retryAfter;
+      throw err;
+    }
+
     if (!response.ok) {
       throw new Error(`Spotify track fetch error ${response.status}`);
     }
@@ -194,6 +203,24 @@ export async function getPlaylistTracks(playlistId: string): Promise<SpotifyTrac
   }
 
   return tracks;
+}
+
+/**
+ * Fetch a single playlist by its Spotify ID.
+ * Returns null if the playlist doesn't exist or is private.
+ * Used when adding a playlist to track, and during polling to detect renames.
+ */
+export async function getPlaylist(
+  playlistId: string
+): Promise<{ id: string; name: string; owner: { id: string; display_name: string } } | null> {
+  const token = await getToken();
+  const response = await fetch(
+    `https://api.spotify.com/v1/playlists/${encodeURIComponent(playlistId)}?fields=id,name,owner(id,display_name)`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error(`Spotify playlist fetch error ${response.status}`);
+  return response.json() as Promise<{ id: string; name: string; owner: { id: string; display_name: string } }>;
 }
 
 /**

@@ -21,7 +21,7 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import * as db from './db';
-import { getUserProfile } from './spotify';
+import { getPlaylist, getPlaylistTracks } from './spotify';
 import { startPoller, registerSSEClient, runPollCycle } from './poller';
 
 // Load .env file into process.env
@@ -82,32 +82,75 @@ app.get('/api/friends', (_req, res) => {
   res.json(db.getFriends());
 });
 
-// POST /api/friends → add a new friend to track
-// Body: { "spotifyUsername": "their_spotify_id" }
-app.post('/api/friends', async (req, res) => {
-  const { spotifyUsername } = req.body as { spotifyUsername?: string };
+// POST /api/playlists → start tracking a playlist by Spotify URL or ID
+// Body: { "input": "https://open.spotify.com/playlist/..." }  or just the ID
+app.post('/api/playlists', async (req, res) => {
+  const { input } = req.body as { input?: string };
 
-  if (!spotifyUsername?.trim()) {
-    res.status(400).json({ error: 'spotifyUsername is required' });
+  if (!input?.trim()) {
+    res.status(400).json({ error: 'Playlist URL or ID is required' });
     return;
   }
 
-  // Validate the user exists on Spotify before we start tracking them
-  let profile;
+  // Pull the playlist ID out of a full Spotify URL, or use the raw string if
+  // the user already pasted just the ID.
+  // URL format: https://open.spotify.com/playlist/<id>?si=...
+  const match = input.trim().match(/playlist[/:]([A-Za-z0-9]+)/);
+  const playlistId = match ? match[1] : input.trim();
+
+  let playlist;
   try {
-    profile = await getUserProfile(spotifyUsername.trim());
+    playlist = await getPlaylist(playlistId);
   } catch (err) {
     res.status(500).json({ error: 'Could not reach Spotify API' });
     return;
   }
 
-  if (!profile) {
-    res.status(404).json({ error: `Spotify user "${spotifyUsername}" not found` });
+  if (!playlist) {
+    res.status(404).json({ error: 'Playlist not found — make sure it\'s public' });
     return;
   }
 
-  db.addFriend(profile.id, profile.display_name);
-  res.json({ success: true, friend: profile });
+  // Group playlists under the owner as a "friend" so notifications still say
+  // who made the change. Create the friend record if we haven't seen this owner before.
+  const friends = db.getFriends();
+  let friend = friends.find(f => f.spotify_username === playlist.owner.id);
+  if (!friend) {
+    db.addFriend(playlist.owner.id, playlist.owner.display_name || playlist.owner.id);
+    friend = db.getFriends().find(f => f.spotify_username === playlist.owner.id)!;
+  }
+
+  // Save the playlist and take an initial track snapshot.
+  // No notifications for the first snapshot — we only notify on *changes* from here on.
+  const stored = db.upsertPlaylist(friend.id, playlist.id, playlist.name);
+  const tracks  = await getPlaylistTracks(playlist.id);
+  db.replacePlaylistTracks(stored.id, tracks.map(t => ({
+    id:     t.id,
+    name:   t.name,
+    artist: t.artists[0]?.name ?? 'Unknown Artist',
+  })));
+
+  res.json({ success: true, name: playlist.name, owner: playlist.owner.display_name });
+});
+
+// GET /api/playlists → list all tracked playlists with their owner info
+app.get('/api/playlists', (_req, res) => {
+  const friends = db.getFriends();
+  const result = friends.flatMap(friend =>
+    db.getPlaylistsForFriend(friend.id).map(p => ({
+      spotify_playlist_id: p.spotify_playlist_id,
+      name:                p.name,
+      owner_name:          friend.display_name || friend.spotify_username,
+      last_polled_at:      p.last_polled_at,
+    }))
+  );
+  res.json(result);
+});
+
+// DELETE /api/playlists/:spotifyId → stop tracking a specific playlist
+app.delete('/api/playlists/:spotifyId', (req, res) => {
+  db.deletePlaylist(req.params.spotifyId);
+  res.json({ success: true });
 });
 
 // DELETE /api/friends/:id → stop tracking a friend

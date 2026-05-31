@@ -18,12 +18,6 @@
 import * as db from './db';
 import { checkFriendForChanges } from './differ';
 
-// How often to check Spotify (milliseconds)
-// 5 minutes = 5 * 60 * 1000
-// Don't set this too low — Spotify has rate limits and we make
-// multiple API calls per friend per poll.
-const POLL_INTERVAL_MS = 5 * 60 * 1000;
-
 // A Set of "send" functions — one per connected browser tab.
 // When a browser connects to GET /api/events, we add its send function here.
 // When it disconnects, we remove it.
@@ -124,17 +118,13 @@ export async function runPollCycle() {  // export in front lets us use this else
 }
 
 /**
- * Start the background poller.
- * Runs immediately once (so you see data right away on startup),
- * then repeats on the interval.
+ * Previously ran automatic background polls every 5 minutes.
+ * Removed — automatic polling burned through Spotify's API quota
+ * (5,000 calls) and got the app disabled.
+ *
+ * Polls now only run when the user clicks Refresh in the UI,
+ * which calls POST /api/poll → runPollCycle().
  */
 export function startPoller() {
-  const minutes = POLL_INTERVAL_MS / 1000 / 60;
-  console.log(`🚀 Poller started — checking every ${minutes} minutes`);
-
-  // First check immediately on startup
-  runPollCycle();
-
-  // Then schedule repeating checks
-  setInterval(runPollCycle, POLL_INTERVAL_MS);
+  console.log('🚀 Manual-only mode — click Refresh in the UI to poll Spotify');
 }
