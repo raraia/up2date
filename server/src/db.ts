@@ -70,9 +70,14 @@ interface DbSchema {
     notifications: number;
   };
   // Persists Spotify rate limit across server restarts.
-  // Stores a Unix timestamp (ms) — if Date.now() is less than this, we're still banned.
-  // Without this, every restart would forget the ban and immediately re-trigger it.
   _rateLimitedUntil: number;
+  // Stores the OAuth tokens from the user's Spotify login.
+  // null means the user hasn't connected their account yet.
+  _spotifyAuth: {
+    access_token:  string;
+    refresh_token: string;
+    expires_at:    number; // ms timestamp — when the access token expires
+  } | null;
 }
 
 // =============================================================
@@ -90,7 +95,8 @@ function loadData(): DbSchema {
       playlist_tracks:    [],
       notifications:      [],
       _counters:          { friends: 0, playlists: 0, notifications: 0 },
-      _rateLimitedUntil:  0, // 0 means "not rate limited"
+      _rateLimitedUntil:  0,
+      _spotifyAuth:       null,
     };
   }
   const raw = fs.readFileSync(DB_PATH, 'utf-8');
@@ -327,5 +333,27 @@ export function getRateLimitedUntil(): number {
 
 export function setRateLimitedUntil(timestamp: number): void {
   data._rateLimitedUntil = timestamp;
+  saveData(data);
+}
+
+// =============================================================
+// SPOTIFY OAUTH TOKEN STORAGE
+// =============================================================
+
+export function getSpotifyAuth() {
+  return data._spotifyAuth ?? null;
+}
+
+export function setSpotifyAuth(auth: {
+  access_token:  string;
+  refresh_token: string;
+  expires_at:    number;
+}): void {
+  data._spotifyAuth = auth;
+  saveData(data);
+}
+
+export function clearSpotifyAuth(): void {
+  data._spotifyAuth = null;
   saveData(data);
 }

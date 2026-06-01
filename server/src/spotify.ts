@@ -1,45 +1,51 @@
 // =============================================================
 // spotify.ts — Spotify API client
 // =============================================================
-// This file handles all communication with Spotify's Web API.
+// Auth strategy (updated June 2026):
 //
-// HOW AUTH WORKS HERE (Client Credentials Flow):
-//   1. We send our Client ID + Secret to Spotify
-//   2. Spotify gives us a temporary "access token" (like a session key)
-//   3. We attach that token to every API request
-//   4. Tokens expire after 1 hour — we auto-refresh when needed
+//   Spotify's 2024 API policy change requires OAuth (user login) to
+//   access playlist tracks. Client Credentials alone return 403.
 //
-// We CAN access: any public playlist, any public user profile
-// We CANNOT access: private playlists, user listening history, etc.
-// That's fine — we just need public playlists!
+//   getToken() now prefers the stored OAuth token. If it's expired,
+//   it automatically refreshes using the refresh token. Falls back to
+//   Client Credentials only for endpoints that don't need user auth.
+//
+//   To connect: user clicks "Connect Spotify" in the UI once.
+//   The refresh token lasts indefinitely (until revoked), so it's
+//   a one-time setup.
 // =============================================================
 
 import dotenv from 'dotenv';
+import * as db from './db';
 dotenv.config();
 
 const CLIENT_ID     = process.env.SPOTIFY_CLIENT_ID!;
 const CLIENT_SECRET = process.env.SPOTIFY_CLIENT_SECRET!;
-
-// Token cache — we store the token in memory so we're not hitting
-// Spotify's auth endpoint on every single API call.
-let cachedToken: string | null = null;
-let tokenExpiresAt: number = 0; // Unix timestamp (milliseconds)
+const REDIRECT_URI  = 'https://localhost:3001/callback';
 
 // =============================================================
 // TOKEN MANAGEMENT
 // =============================================================
 
-async function getToken(): Promise<string> {
-  const now = Date.now();
+// Build the URL the user visits to log in with Spotify
+export function getAuthUrl(): string {
+  const scopes = [
+    'playlist-read-private',
+    'playlist-read-collaborative',
+  ].join(' ');
 
-  // If we have a valid cached token, reuse it
-  if (cachedToken && now < tokenExpiresAt) {
-    return cachedToken;
-  }
+  const params = new URLSearchParams({
+    client_id:     CLIENT_ID,
+    response_type: 'code',
+    redirect_uri:  REDIRECT_URI,
+    scope:         scopes,
+  });
 
-  // Otherwise, request a new one.
-  // Spotify requires the credentials as: Base64("clientId:clientSecret")
-  // Buffer.from(...).toString('base64') is Node's built-in way to do base64
+  return `https://accounts.spotify.com/authorize?${params}`;
+}
+
+// Exchange the one-time code (from the OAuth redirect) for real tokens
+export async function exchangeCodeForTokens(code: string): Promise<void> {
   const credentials = Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString('base64');
 
   const response = await fetch('https://accounts.spotify.com/api/token', {
@@ -48,27 +54,89 @@ async function getToken(): Promise<string> {
       'Content-Type':  'application/x-www-form-urlencoded',
       'Authorization': `Basic ${credentials}`,
     },
-    // The body must be URL-encoded form data (not JSON) — Spotify's requirement
-    body: 'grant_type=client_credentials',
+    body: new URLSearchParams({
+      grant_type:   'authorization_code',
+      code,
+      redirect_uri: REDIRECT_URI,
+    }).toString(),
   });
 
   if (!response.ok) {
-    throw new Error(
-      `Failed to get Spotify token: ${response.status} ${response.statusText}`
-    );
+    const text = await response.text();
+    throw new Error(`Token exchange failed: ${response.status} ${text}`);
   }
 
-  const data = await response.json() as {
-    access_token: string;
-    expires_in: number; // seconds until expiry (usually 3600 = 1 hour)
+  const tokens = await response.json() as {
+    access_token:  string;
+    refresh_token: string;
+    expires_in:    number;
   };
 
-  cachedToken = data.access_token;
-  // Subtract 5 minutes as a safety buffer — refresh a bit before actual expiry
-  tokenExpiresAt = now + (data.expires_in - 300) * 1000;
+  db.setSpotifyAuth({
+    access_token:  tokens.access_token,
+    refresh_token: tokens.refresh_token,
+    expires_at:    Date.now() + (tokens.expires_in - 300) * 1000,
+  });
 
-  console.log('🔑 Got new Spotify access token (valid for 1 hour)');
-  return cachedToken;
+  console.log('✅ Spotify OAuth connected — tokens saved');
+}
+
+// Use the stored refresh token to get a fresh access token
+async function refreshOAuthToken(): Promise<string> {
+  const auth = db.getSpotifyAuth();
+  if (!auth) throw new Error('No OAuth tokens stored');
+
+  const credentials = Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString('base64');
+
+  const response = await fetch('https://accounts.spotify.com/api/token', {
+    method: 'POST',
+    headers: {
+      'Content-Type':  'application/x-www-form-urlencoded',
+      'Authorization': `Basic ${credentials}`,
+    },
+    body: new URLSearchParams({
+      grant_type:    'refresh_token',
+      refresh_token: auth.refresh_token,
+    }).toString(),
+  });
+
+  if (!response.ok) {
+    db.clearSpotifyAuth(); // refresh token is dead — user needs to reconnect
+    throw new Error(`Token refresh failed: ${response.status}`);
+  }
+
+  const tokens = await response.json() as {
+    access_token:  string;
+    refresh_token?: string; // Spotify sometimes rotates the refresh token
+    expires_in:    number;
+  };
+
+  db.setSpotifyAuth({
+    access_token:  tokens.access_token,
+    refresh_token: tokens.refresh_token ?? auth.refresh_token,
+    expires_at:    Date.now() + (tokens.expires_in - 300) * 1000,
+  });
+
+  console.log('🔑 OAuth token refreshed');
+  return tokens.access_token;
+}
+
+// getToken — the single function all API calls use.
+// Prefers the stored OAuth token, auto-refreshes if expired.
+async function getToken(): Promise<string> {
+  const auth = db.getSpotifyAuth();
+
+  if (auth) {
+    // Token still valid — use it
+    if (Date.now() < auth.expires_at) return auth.access_token;
+    // Expired — refresh and return fresh one
+    return refreshOAuthToken();
+  }
+
+  // No OAuth token — user hasn't connected yet.
+  // Throw a clear error instead of silently using Client Credentials
+  // (which would just return 403 on protected endpoints anyway).
+  throw new Error('NOT_CONNECTED');
 }
 
 // =============================================================

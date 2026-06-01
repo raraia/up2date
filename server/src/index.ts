@@ -18,10 +18,14 @@
 // =============================================================
 
 import express from 'express';
+import https from 'https';
+import fs from 'fs';
+import path from 'path';
+import { exec } from 'child_process';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import * as db from './db';
-import { getPlaylist, getPlaylistTracks } from './spotify';
+import { getPlaylist, getPlaylistTracks, getAuthUrl, exchangeCodeForTokens } from './spotify';
 import { startPoller, registerSSEClient, runPollCycle } from './poller';
 
 // Load .env file into process.env
@@ -71,6 +75,41 @@ app.get('/api/events', (req, res) => {
 
   // When the browser closes the tab / navigates away, clean up
   req.on('close', unsubscribe);
+});
+
+// =============================================================
+// AUTH ENDPOINTS
+// =============================================================
+
+// GET /api/auth/status → has the user connected their Spotify account?
+app.get('/api/auth/status', (_req, res) => {
+  const auth = db.getSpotifyAuth();
+  res.json({ connected: auth !== null });
+});
+
+// GET /api/auth/login → redirect the browser to Spotify's login page
+app.get('/api/auth/login', (_req, res) => {
+  res.redirect(getAuthUrl());
+});
+
+// GET /callback → Spotify redirects here after the user logs in
+// Exchanges the one-time code for real tokens and saves them
+app.get('/callback', async (req, res) => {
+  const code = req.query.code as string | undefined;
+
+  if (!code) {
+    res.status(400).send('Missing code from Spotify');
+    return;
+  }
+
+  try {
+    await exchangeCodeForTokens(code);
+    // Send the user back to the frontend, flag in the URL so the UI can react
+    res.redirect('http://localhost:5174?connected=true');
+  } catch (err) {
+    console.error('OAuth callback error:', err);
+    res.status(500).send('Authentication failed — check server logs');
+  }
 });
 
 // =============================================================
@@ -200,13 +239,25 @@ app.post('/api/notifications/mark-all-read', (_req, res) => {
 });
 
 // =============================================================
-// START THE SERVER
+// START THE SERVER (HTTPS)
 // =============================================================
-app.listen(PORT, () => {
-  console.log(`\n🎵 Up2Date server running → http://localhost:${PORT}`);
-  console.log(`📡 SSE stream          → http://localhost:${PORT}/api/events`);
-  console.log(`📋 Notifications API   → http://localhost:${PORT}/api/notifications\n`);
+const certDir = path.join(process.cwd(), 'certs');
+const httpsOptions = {
+  key:  fs.readFileSync(path.join(certDir, 'key.pem')),
+  cert: fs.readFileSync(path.join(certDir, 'cert.pem')),
+};
 
-  // Kick off the background polling
+https.createServer(httpsOptions, app).listen(PORT, () => {
+  console.log(`\n🎵 Up2Date server running → https://localhost:${PORT}`);
+  console.log(`📡 SSE stream          → https://localhost:${PORT}/api/events`);
+  console.log(`📋 Notifications API   → https://localhost:${PORT}/api/notifications\n`);
+
   startPoller();
+
+  if (!db.getSpotifyAuth()) {
+    console.log('\n🔑 No Spotify token found — opening browser to connect...');
+    exec('open https://localhost:3001/api/auth/login');
+  } else {
+    console.log('✅ Spotify already connected\n');
+  }
 });

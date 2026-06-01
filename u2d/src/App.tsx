@@ -19,7 +19,7 @@ import { Bell } from 'lucide-react'
 
 
 // The URL of our backend server
-const API = 'http://localhost:3001'
+const API = 'https://localhost:3001'
 
 // =============================================================
 // TYPE DEFINITIONS
@@ -269,6 +269,35 @@ function usePlaylists() {
 
   return { playlists, addError, adding, addPlaylist, removePlaylist }
 }
+/**
+ * useSpotifyAuth — checks if the user has connected their Spotify account.
+ * Also handles the ?connected=true redirect that comes back from OAuth.
+ */
+function useSpotifyAuth() {
+  // Read URL params synchronously on first render so we never need setState inside an effect
+  const [connected, setConnected] = useState<boolean | null>(() => {
+    const params = new URLSearchParams(window.location.search)
+    return params.get('connected') === 'true' ? true : null
+  })
+
+  useEffect(() => {
+    // Clean the ?connected=true from the URL (purely cosmetic, no setState)
+    if (window.location.search.includes('connected=true')) {
+      window.history.replaceState({}, '', '/')
+      return // initial state already set to true above
+    }
+    // Ask the server if we already have OAuth tokens stored
+    fetch(`${API}/api/auth/status`)
+      .then(r => r.json())
+      .then((data: { connected: boolean }) => setConnected(data.connected))
+      .catch(() => setConnected(false))
+  }, [])
+
+  const login = () => { window.location.href = `${API}/api/auth/login` }
+
+  return { connected, login }
+}
+
 // usePollNow - sends a POST to /api/poll, then refreshes notifications,
 // then stops the spinner. The spinner runs for the full real duration —
 // no fake timeout, it stops exactly when the data is fresh.
@@ -549,6 +578,7 @@ export default function App() {
   const playlists = usePlaylists()
   const { connected } = useSSE(notifs.reload)
   const { polling, pollNow } = usePollNow(notifs.fetchNow)
+  const spotify = useSpotifyAuth()
 
   const feedItems = notifs.notifications.filter(n => n.type === 'track_added')
 
@@ -566,7 +596,7 @@ export default function App() {
           <button
             className="btn btn-ghost"
             onClick={pollNow}
-            disabled={polling}
+            disabled={polling || spotify.connected !== true}
             title={connected ? 'Live' : 'Disconnected'}
           >
             <span className={`status-dot ${connected ? 'connected' : 'disconnected'}`} />

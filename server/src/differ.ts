@@ -120,8 +120,8 @@ export async function checkFriendForChanges(friend: {
       db.upsertPlaylist(friend.id, stored.spotify_playlist_id, current.name);
 
     } catch (err) {
-      // Re-throw rate limit errors so the poller can handle the cooldown
       if (err instanceof Error && 'retryAfter' in err) throw err;
+      if (err instanceof Error && err.message === 'NOT_CONNECTED') throw err;
       console.error(`    ⚠️  Error checking "${stored.name}":`, err);
     }
   }

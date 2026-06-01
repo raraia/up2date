@@ -94,10 +94,12 @@ export async function runPollCycle() {  // export in front lets us use this else
       const count = await checkFriendForChanges(friend);
       totalNew += count;
     } catch (err: unknown) {
-      // Spotify told us exactly how long to wait — store that as a future timestamp
+      if (err instanceof Error && err.message === 'NOT_CONNECTED') {
+        console.log('⚠️  Spotify not connected — click "Connect Spotify" in the UI');
+        return;
+      }
       if (err instanceof Error && 'retryAfter' in err) {
         const wait = (err as Error & { retryAfter: number }).retryAfter;
-        // Save to the database so this survives server restarts
         db.setRateLimitedUntil(Date.now() + wait * 1000);
         const hours = (wait / 3600).toFixed(1);
         console.log(`🚫 Rate limited by Spotify — polling paused for ${hours} hours`);
